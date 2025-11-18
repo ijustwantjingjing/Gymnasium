@@ -391,3 +391,10 @@ def _raise_shimmy_error(*args: Any, **kwargs: Any):
 # When installed, shimmy will re-register these environments with the correct entry_point
 register(id="GymV21Environment-v0", entry_point=_raise_shimmy_error)
 register(id="GymV26Environment-v0", entry_point=_raise_shimmy_error)
+
+
+register(
+    id="Unitree-G1",
+    entry_point="gymnasium.envs.mujoco.unitree_g1:UnitreeEnv",
+    max_episode_steps=10000,
+)
