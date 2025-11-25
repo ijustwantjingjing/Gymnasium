@@ -23,7 +23,7 @@ def simulate(model: mujoco.MjModel, data: mujoco.MjData, n_frames):
 
 def find_actor_rigid_body_handle(model: mujoco.MjModel, data: mujoco.MjData, name: str):
     indice = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
-    print("[DEBUG Warpper] name:", name, "-> indice:", indice)
+    # print("[DEBUG Warpper] name:", name, "-> indice:", indice)
     return indice
 
 
@@ -69,9 +69,9 @@ def get_asset_dof_properties(model: mujoco.MjModel, data: mujoco.MjData, num_dof
     #     fmin, fmax = act_forcerange[i]
     #     self.torque_limits[i] = max(abs(fmin), abs(fmax))
 
-    print("[DEBUG Warpper] mujoco dof_pos_limits =", dof_pos_limits)
-    print("[DEBUG Warpper] mujoco dof_vel_limits =", dof_vel_limits)
-    print("[DEBUG Warpper] mujoco torque_limits  =", torque_limits)
+    # print("[DEBUG Warpper] mujoco dof_pos_limits =", dof_pos_limits)
+    # print("[DEBUG Warpper] mujoco dof_vel_limits =", dof_vel_limits)
+    # print("[DEBUG Warpper] mujoco torque_limits  =", torque_limits)
 
     return dof_pos_limits, dof_vel_limits, torque_limits
 
@@ -82,46 +82,46 @@ def get_asset_dof_names(model: mujoco.MjModel, data: mujoco.MjData) -> list[str]
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)
         for i in range(1, model.njnt)
     ]
-    print("[DEBUG Warpper] dof_names = ",dof_names)
+    # print("[DEBUG Warpper] dof_names = ",dof_names)
     return dof_names
 
 
 def get_asset_rigid_body_names(model: mujoco.MjModel, data: mujoco.MjData) -> list[str]:
     body_names = [model.body(i).name for i in range(model.nbody)]
-    print("[DEBUG Warpper] body_names = ",body_names)
+    # print("[DEBUG Warpper] body_names = ",body_names)
     return body_names
 
 
 def get_asset_dof_count(model: mujoco.MjModel, data: mujoco.MjData) -> int:
     # 这里必须-6,因为 num_dof得排除freejoint的6个自由度
     num_dof = int(model.nv - 6)
-    print("[DEBUG Warpper] num_dof = ",num_dof)
+    # print("[DEBUG Warpper] num_dof = ",num_dof)
     return num_dof
 
 
 def get_asset_rigid_body_count(model: mujoco.MjModel, data: mujoco.MjData) -> int:
     num_bodies = model.nbody
-    print("[DEBUG Warpper] num_bodies = ",num_bodies)
+    # print("[DEBUG Warpper] num_bodies = ",num_bodies)
     return num_bodies
 
 
-def acquire_dof_state_tensor(model: mujoco.MjModel, data: mujoco.MjData) -> tuple[torch.Tensor, torch.Tensor]:
+def acquire_dof_state_tensor(model: mujoco.MjModel, data: mujoco.MjData):
     # 这里必须排除freejoint,因为后续的 default_dof_pos 是按照名字遍历的, 默认每个自由度为1
-    qj_np  = data.qpos[7:].copy()
-    dqj_np = data.qvel[6:].copy()
+    dof_pos  = data.qpos[7:]
+    dof_vel = data.qvel[6:]
 
     # torch.as_tensor() 除非 dtype/device 不同，不然不会复制数据。torch.tensor()则一定会复制数据
-    dof_pos = torch.as_tensor(qj_np,  dtype=torch.float32, device="cpu")
-    print("[DEBUG Warpper] dof_pos.shape = ",dof_pos.shape)
-    print("[DEBUG Warpper] dof_pos = ",dof_pos)
+    # dof_pos = torch.as_tensor(qj_np,  dtype=torch.float32, device="cpu")
+    # print("[DEBUG Warpper] dof_pos.shape = ",dof_pos.shape)
+    # print("[DEBUG Warpper] dof_pos = ",dof_pos)
 
-    dof_vel = torch.as_tensor(dqj_np, dtype=torch.float32, device="cpu")
-    print("[DEBUG Warpper] dof_vel.shape = ",dof_vel.shape)
-    print("[DEBUG Warpper] dof_vel = ",dof_vel)
+    # dof_vel = torch.as_tensor(dqj_np, dtype=torch.float32, device="cpu")
+    # print("[DEBUG Warpper] dof_vel.shape = ",dof_vel.shape)
+    # print("[DEBUG Warpper] dof_vel = ",dof_vel)
 
     return dof_pos, dof_vel
 
-def acquire_rigid_body_state_tensor(model: mujoco.MjModel, data: mujoco.MjData) -> torch.Tensor:
+def acquire_rigid_body_state_tensor(model: mujoco.MjModel, data: mujoco.MjData):
     # 不创建self.rigid_body_states(num_envs * num_bodies, 13), 直接创建rigid_body_states_view (num_envs, num_bodies, 13)
     # 预分配与 Isaac 同 shape 的 PyTorch 缓冲区（后续原地写入，保持视图有效）
     rigid_body_states_view = torch.empty((model.nbody, 13), device='cpu', dtype=torch.float32, requires_grad=False)
@@ -147,13 +147,31 @@ def acquire_rigid_body_state_tensor(model: mujoco.MjModel, data: mujoco.MjData) 
 
     rigid_body_states_view[:, 7:10]  = lin
     rigid_body_states_view[:, 10:13] = ang
-    print("[DEBUG Warpper] rigid_body_states_view.shape = ",rigid_body_states_view.shape)
-    print("[DEBUG Warpper] rigid_body_states_view = ",rigid_body_states_view)
+    # print("[DEBUG Warpper] rigid_body_states_view.shape = ",rigid_body_states_view.shape)
+    # print("[DEBUG Warpper] rigid_body_states_view = ",rigid_body_states_view)
 
     return rigid_body_states_view
 
+# rigid_body_states_view是自行构造的，需要refresh
+def refresh_rigid_body_state_tensor(model: mujoco.MjModel, data: mujoco.MjData, rigid_body_states_view):
+    xpos  = torch.as_tensor(data.xpos,  dtype=torch.float32, device='cpu')   # (nbody, 3)
+    xquat = torch.as_tensor(data.xquat, dtype=torch.float32, device='cpu')   # (nbody, 4)
 
-def acquire_actor_root_state_tensor(model: mujoco.MjModel, data: mujoco.MjData) -> torch.Tensor:
+    rigid_body_states_view[:, 0:3] = xpos
+    rigid_body_states_view[:, 3:7] = xquat
+
+    tmp = np.zeros((model.nbody, 6), dtype=np.float64 if data.xpos.dtype == np.float64 else np.float32)
+    for b in range(model.nbody):
+        mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_BODY, b, tmp[b], 0)
+
+    lin = torch.as_tensor(tmp[:, 0:3], dtype=torch.float32, device='cpu')   # 线速度
+    ang = torch.as_tensor(tmp[:, 3:6], dtype=torch.float32, device='cpu')   # 角速度
+
+    rigid_body_states_view[:, 7:10]  = lin
+    rigid_body_states_view[:, 10:13] = ang
+
+
+def acquire_actor_root_state_tensor(model: mujoco.MjModel, data: mujoco.MjData):
     # root直接认为序号为0
     # jid  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, rootname)
 
@@ -161,44 +179,62 @@ def acquire_actor_root_state_tensor(model: mujoco.MjModel, data: mujoco.MjData) 
     vadr = model.jnt_dofadr[0]
 
     # 更高效的张量构造（避免频繁 torch.tensor），一次性用 NumPy → Torch
-    # 不使用copy的话在torch.from_numpy时会与mujoco共享内存，下一次mujoco更新的时候pytorch的变量也会更新
-    qpos = data.qpos[qadr:qadr+7].copy()
-    qvel = data.qvel[vadr:vadr+6].copy()
-    
+    # qpos = data.qpos[qadr:qadr+7].copy()
+    # qpos = data.qpos[qadr:qadr+7].copy()
+
+    qvel = data.qvel[vadr:vadr+6]
+    qpos = data.qpos[qadr:qadr+7]
+
     # 直接拼成 numpy，再一次转 torch
     root_np = np.empty((13,), dtype=np.float32)
     root_np[0:3]  = qpos[0:3]          # px,py,pz
     root_np[3:7]  = [qpos[4], qpos[5], qpos[6], qpos[3]]  # qx,qy,qz,qw
     root_np[7:13] = qvel               # vx,vy,vz,wx,wy,wz
-    print("[DEBUG Warpper] root_np.shape = ",root_np.shape)
-    print("[DEBUG Warpper] root_np = ",root_np)
+    # print("[DEBUG Warpper] root_np.shape = ",root_np.shape)
+    # print("[DEBUG Warpper] root_np = ",root_np)
 
-    return torch.from_numpy(root_np)
+    # return torch.from_numpy(root_np)
+    return root_np
 
 
-def acquire_net_contact_force_tensor(model: mujoco.MjModel, data: mujoco.MjData) -> torch.Tensor:
+# root_np是自行拼接的，所以需要refresh
+def refresh_actor_root_state_tensor(model: mujoco.MjModel, data: mujoco.MjData, root_np):
+    # root直接认为序号为0
+    qadr = model.jnt_qposadr[0]  
+    vadr = model.jnt_dofadr[0]
+
+    qpos = data.qpos[qadr:qadr+7]
+    qvel = data.qvel[vadr:vadr+6]
+    
+    root_np[0:3]  = qpos[0:3]          # px,py,pz
+    root_np[3:7]  = [qpos[4], qpos[5], qpos[6], qpos[3]]  # qx,qy,qz,qw
+    root_np[7:13] = qvel               # vx,vy,vz,wx,wy,wz
+
+
+def acquire_net_contact_force_tensor(model: mujoco.MjModel, data: mujoco.MjData):
     # MuJoCo 在每个仿真步后会给出每个 body 的外力与外矩阵列：data.cfrc_ext[body_id]，这是一个 6 维向量 [torque(3), force(3)]，定义在所谓 “c-frame”（原点在子树质心，方向与世界坐标系对齐）。因此后三个分量可直接当作“世界系力” 使用。(MuJoCo Documentation)
     # 注意：cfrc_ext 是“外力”合力，通常包括接触力；若你场景里还施加了其它外力（例如 xfrc_applied），它们也会算进去。所以这是“近似地等同于 Isaac 的 net contact force”。如果你需要严格只统计接触产生的力，请用方式 B。
     # MuJoCo: data.cfrc_ext 形状 (nbody, 6) = [torque(3), force(3)]
-    forces_world_np = data.cfrc_ext[:, 3:6] # (nbody, 3)
-    contact_forces = torch.as_tensor(forces_world_np, dtype=torch.float32, device="cpu")
+    contact_forces_np = data.cfrc_ext[:, 3:6] # (nbody, 3)
+    # contact_forces = torch.as_tensor(forces_world_np, dtype=torch.float32, device="cpu")
     
-    print("[DEBUG Warpper] contact_forces.shape = ",contact_forces.shape)
-    print("[DEBUG Warpper] rootcontact_forces_np = ",contact_forces)
+    # print("[DEBUG Warpper] contact_forces.shape = ",contact_forces.shape)
+    # print("[DEBUG Warpper] rootcontact_forces_np = ",contact_forces)
 
-    return contact_forces
+    return contact_forces_np
 
 
-def set_dof_actuation_force_tensor(model: mujoco.MjModel, data: mujoco.MjData, torques: Tensor):
-    data.ctrl[:] = torques
+def set_dof_actuation_force_tensor(model: mujoco.MjModel, data: mujoco.MjData, torques: torch.Tensor):
+    torques_np = torques.detach().cpu().numpy()
+    data.ctrl[:] = torques_np
 
 
 # 设置dof的pos和vel，不包括根节点的freejoint
 def set_dof_state_tensor_indexed(model: mujoco.MjModel, data: mujoco.MjData, dof_pos: torch.Tensor, dof_vel: torch.Tensor):
-    print("[DEBUG Warpper] [input] dof_pos.shape :", dof_pos.shape)
-    print("[DEBUG Warpper] [input] dof_pos :", dof_pos)
-    print("[DEBUG Warpper] [input] dof_vel.shape :", dof_vel.shape)
-    print("[DEBUG Warpper] [input] dof_vel :", dof_vel)
+    # print("[DEBUG Warpper] [input] dof_pos.shape :", dof_pos.shape)
+    # print("[DEBUG Warpper] [input] dof_pos :", dof_pos)
+    # print("[DEBUG Warpper] [input] dof_vel.shape :", dof_vel.shape)
+    # print("[DEBUG Warpper] [input] dof_vel :", dof_vel)
 
     nq = model.nq
     nv = model.nv
@@ -206,8 +242,8 @@ def set_dof_state_tensor_indexed(model: mujoco.MjModel, data: mujoco.MjData, dof
     base_qpos_offset = 7
     base_qvel_offset = 6
 
-    dof_pos_np = dof_pos.numpy()
-    dof_vel_np = dof_vel.numpy()
+    dof_pos_np = dof_pos.detach().cpu().numpy()
+    dof_vel_np = dof_vel.detach().cpu().numpy()
 
     # 关节（纯 joint）段： [base_offset : 该 env 末尾)
     data.qpos[base_qpos_offset : nq] = dof_pos_np
@@ -227,8 +263,8 @@ def set_actor_root_state_tensor_indexed(model: mujoco.MjModel, data: mujoco.MjDa
     [7:10] lin_vel(x,y,z)
     [10:13] ang_vel(x,y,z)
     """
-    print("[DEBUG Warpper] [input] root_states.shape :", root_states.shape)
-    print("[DEBUG Warpper] [input] root_states :", root_states)
+    # print("[DEBUG Warpper] [input] root_states.shape :", root_states.shape)
+    # print("[DEBUG Warpper] [input] root_states :", root_states)
 
     # torch -> numpy（无梯度）
     root_state = root_states.detach().cpu().numpy()
@@ -239,10 +275,10 @@ def set_actor_root_state_tensor_indexed(model: mujoco.MjModel, data: mujoco.MjDa
     quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
     ang = root_state[10:13]
     lin = root_state[7:10]
-    print("[DEBUG Warpper] [input] root_state pos:", pos_xyz)
-    print("[DEBUG Warpper] [input] root_state quat_wxyz:", quat_wxyz)
-    print("[DEBUG Warpper] [input] root_state ang:", ang)
-    print("[DEBUG Warpper] [input] root_state lin:", lin)
+    # print("[DEBUG Warpper] [input] root_state pos:", pos_xyz)
+    # print("[DEBUG Warpper] [input] root_state quat_wxyz:", quat_wxyz)
+    # print("[DEBUG Warpper] [input] root_state ang:", ang)
+    # print("[DEBUG Warpper] [input] root_state lin:", lin)
 
     # 写 qvel（顺序：ang_vel(3) + lin_vel(3)）
     data.qvel[0:6] = np.concatenate([ang, lin], axis=0)
@@ -390,7 +426,7 @@ def quat_rotate_inverse(q, v):
 
     # 按公式：v' = (2 w^2 - 1) v - 2 w (q × v) + 2 (q · v) q
     a = v * (2.0 * q_w ** 2 - 1.0)              # (3,)
-    b = torch.cross(q_vec, v) * q_w * 2.0       # (3,)
+    b = torch.cross(q_vec, v, dim=0) * q_w * 2.0       # (3,)
     c = q_vec * (torch.dot(q_vec, v)) * 2.0     # (3,)
 
     return a - b + c                            # (3,)

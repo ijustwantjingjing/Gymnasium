@@ -57,7 +57,9 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         # sim_params = {"sim": isaac2mujoco.class_to_dict(cfg.sim)}
         self.sim_params = isaac2mujoco.parse_sim_params(self.cfg)
         
-        frame_skip = self.cfg.control.decimation
+
+        # 还是使用isaac对应的decimation形式，不然没有办法计算torque
+        # frame_skip = self.cfg.control.decimation
 
         self.device = 'cpu'
 
@@ -91,7 +93,6 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         self.rew_buf = torch.tensor(0, device=self.device, dtype=torch.float)
         # self.episode_length_buf : int
         self.episode_length_buf = torch.tensor(0, device=self.device, dtype=torch.int)
-        print("[DEBUG] episode_length_buf.shape :", self.episode_length_buf.shape)
 
         if self.num_privileged_obs is not None:
             self.privileged_obs_buf = torch.zeros(self.num_privileged_obs, device=self.device, dtype=torch.float)
@@ -107,6 +108,14 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             observation_space=None,
             default_camera_config=default_camera_config,
             **kwargs,
+        )
+
+        # 手动指定action_space（isaac gym是通过urdf中读取的关节限制，因为没有基于gymnasium所以也不需要action_space）
+        clip_actions = self.cfg.normalization.clip_actions  # 和 LeggedGym config 对齐
+        self.action_space = Box(
+            low=-clip_actions * np.ones(self.num_actions, dtype=np.float32),
+            high= clip_actions * np.ones(self.num_actions, dtype=np.float32),
+            dtype=np.float32,
         )
 
         # 覆盖 MuJoCo 的 timestep，使之等于 cfg.sim.dt
@@ -207,30 +216,44 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         # self.data = mujoco.MjData(self.model)
 
         self.num_dof = isaac2mujoco.get_asset_dof_count(self.model, self.data)
+        print("[Init] self.num_dof:", self.num_dof)
 
         self.num_bodies = isaac2mujoco.get_asset_rigid_body_count(self.model, self.data)
+        print("[Init] self.num_bodies:", self.num_bodies)
 
         self.dof_pos_limits, self.dof_vel_limits, self.torque_limits = isaac2mujoco.get_asset_dof_properties(self.model, self.data, self.num_dof)
+        print("[Init] self.dof_pos_limits:", self.dof_pos_limits)
+        print("[Init] self.dof_vel_limits:", self.dof_vel_limits)
+        print("[Init] self.torque_limits:", self.torque_limits)
 
         # save body names from the asset
         body_names = isaac2mujoco.get_asset_rigid_body_names(self.model, self.data)
+        print("[Init] body_names:", body_names)
         self.dof_names = isaac2mujoco.get_asset_dof_names(self.model, self.data)
+        print("[Init] self.dof_names:", self.dof_names)
         self.num_bodies = len(body_names)
+        print("[Init] self.num_bodies:", self.num_bodies)
         self.num_dofs = len(self.dof_names)
+        print("[Init] self.num_dofs:", self.num_dofs)
         
         feet_names = [s for s in body_names if self.cfg.asset.foot_name in s]
+        print("[Init] feet_names:", feet_names)
         penalized_contact_names = []
         for name in self.cfg.asset.penalize_contacts_on:
             penalized_contact_names.extend([s for s in body_names if name in s])
+        print("[Init] penalized_contact_names:", penalized_contact_names)
         termination_contact_names = []
         for name in self.cfg.asset.terminate_after_contacts_on:
             termination_contact_names.extend([s for s in body_names if name in s])
+        print("[Init] termination_contact_names:", termination_contact_names)
 
         base_init_state_list = self.cfg.init_state.pos + self.cfg.init_state.rot + self.cfg.init_state.lin_vel + self.cfg.init_state.ang_vel
         self.base_init_state = isaac2mujoco.to_torch(base_init_state_list, device=self.device, requires_grad=False)
+        print("[Init] self.base_init_state:", self.base_init_state)
 
         self.custom_origins = False
         self.env_origins = torch.zeros(3, device=self.device, requires_grad=False)
+        print("[Init] self.env_origins:", self.env_origins)
 
         # create env instance
         # TODO: 修改_process_rigid_shape_props
@@ -250,14 +273,17 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
             self.feet_indices[i] = isaac2mujoco.find_actor_rigid_body_handle(self.model, self.data, feet_names[i])
+        print("[Init] self.feet_indices:", self.feet_indices)
 
         self.penalised_contact_indices = torch.zeros(len(penalized_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(penalized_contact_names)):
             self.penalised_contact_indices[i] = isaac2mujoco.find_actor_rigid_body_handle(self.model, self.data, penalized_contact_names[i])
+        print("[Init] self.penalised_contact_indices:", self.penalised_contact_indices)
 
         self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(termination_contact_names)):
             self.termination_contact_indices[i] = isaac2mujoco.find_actor_rigid_body_handle(self.model, self.data, termination_contact_names[i])
+        print("[Init] self.termination_contact_indices:", self.termination_contact_indices)
     
     # TODO: 修改_process_rigid_shape_props
     # def _process_rigid_shape_props(self, props, env_id):
@@ -296,6 +322,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             r = self.dof_pos_limits[i, 1] - self.dof_pos_limits[i, 0]
             self.dof_pos_limits[i, 0] = m - 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
             self.dof_pos_limits[i, 1] = m + 0.5 * r * self.cfg.rewards.soft_dof_pos_limit
+        print("[Init] self.dof_pos_limits:", self.dof_pos_limits)
 
     # TODO: 修改_process_rigid_body_props
     # def _process_rigid_body_props(self, props, env_id):
@@ -316,21 +343,37 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         """ Initialize torch tensors which will contain simulation states and processed quantities
         """
         # create some wrapper tensors for different slices
-        self.root_states = isaac2mujoco.acquire_actor_root_state_tensor(self.model, self.data)
-        self.dof_pos, self.dof_vel = isaac2mujoco.acquire_dof_state_tensor(self.model, self.data)
-        self.contact_forces = isaac2mujoco.acquire_net_contact_force_tensor(self.model, self.data)
+        self.root_states_np = isaac2mujoco.acquire_actor_root_state_tensor(self.model, self.data)
+        self.root_states = torch.from_numpy(self.root_states_np)
+        print("[Init] self.root_states:", self.root_states)
+
+        self.dof_pos_np, self.dof_vel_np = isaac2mujoco.acquire_dof_state_tensor(self.model, self.data)
+        self.dof_pos = torch.from_numpy(self.dof_pos_np)
+        self.dof_vel = torch.from_numpy(self.dof_vel_np)
+        print("[Init] self.dof_pos:", self.dof_pos)
+        print("[Init] self.dof_vel:", self.dof_vel)
+
+        self.contact_forces_np = isaac2mujoco.acquire_net_contact_force_tensor(self.model, self.data)
+        self.contact_forces = torch.from_numpy(self.contact_forces_np)
+        print("[Init] self.contact_forces:", self.contact_forces)
 
         self.base_quat = self.root_states[3:7]
+        print("[Init] self.base_quat:", self.base_quat)
         # root_states已经将mujoco的wxyz形式转换为了xyzw
         self.rpy = isaac2mujoco.get_euler_xyz(self.base_quat)
+        print("[Init] self.rpy:", self.rpy)
         self.base_pos = self.root_states[0:3]
+        print("[Init] self.base_pos:", self.base_pos)
 
         # initialize some data used later on
         self.common_step_counter = 0
         self.extras = {}
         self.noise_scale_vec = self._get_noise_scale_vec(self.cfg)
+        print("[Init] self.noise_scale_vec:", self.noise_scale_vec)
         self.gravity_vec = isaac2mujoco.to_torch(isaac2mujoco.get_axis_params(-1., self.up_axis_idx), device=self.device)
+        print("[Init] self.gravity_vec:", self.gravity_vec)
         self.forward_vec = isaac2mujoco.to_torch([1., 0., 0.], device=self.device)
+        print("[Init] self.forward_vec:", self.forward_vec)
         self.torques = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.p_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.d_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
@@ -343,8 +386,11 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         self.feet_air_time = torch.zeros(self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
         self.base_lin_vel = isaac2mujoco.quat_rotate_inverse(self.base_quat, self.root_states[7:10])
+        print("[Init] self.base_lin_vel:", self.base_lin_vel)
         self.base_ang_vel = isaac2mujoco.quat_rotate_inverse(self.base_quat, self.root_states[10:13])
+        print("[Init] self.base_ang_vel:", self.base_ang_vel)
         self.projected_gravity = isaac2mujoco.quat_rotate_inverse(self.base_quat, self.gravity_vec)
+        print("[Init] self.projected_gravity:", self.projected_gravity)
 
         # joint positions offsets and PD gains
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
@@ -363,16 +409,24 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
                 self.d_gains[i] = 0.
                 if self.cfg.control.control_type in ["P", "V"]:
                     print(f"PD gain of joint {name} were not defined, setting them to zero")
+        print("[Init] self.default_dof_pos:", self.default_dof_pos)
+        print("[Init] self.p_gains:", self.p_gains)
+        print("[Init] self.d_gains:", self.d_gains)
 
         # 这里不需要unsqueeze，因为dof_pos已经去除了env维度
         # self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
 
         self.feet_num = len(self.feet_indices)
+        print("[Init] self.feet_num:", self.feet_num)
         
         self.rigid_body_states_view = isaac2mujoco.acquire_rigid_body_state_tensor(self.model, self.data)
+        print("[Init] self.rigid_body_states_view:", self.rigid_body_states_view)
         self.feet_state = self.rigid_body_states_view[self.feet_indices, :]
+        print("[Init] self.feet_state:", self.feet_state)
         self.feet_pos = self.feet_state[:, :3]
+        print("[Init] self.feet_pos:", self.feet_pos)
         self.feet_vel = self.feet_state[:, 7:10]
+        print("[Init] self.feet_vel:", self.feet_vel)
 
     # ============================================== legged_robot ==============================================
     # def _get_noise_scale_vec(self, cfg):
@@ -474,7 +528,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     def _get_obs(self):
 
         self.compute_observations()
-        print("[DEBUG] self.obs_buf:", self.obs_buf)
+        # print("[DEBUG] self.obs_buf:", self.obs_buf)
 
         # return clipped obs, clipped states (None), rewards, dones and infos
         clip_obs = self.cfg.normalization.clip_observations
@@ -486,7 +540,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
 
         # 将pytorch变量转换到numpy输出
         observation = self.obs_buf.detach().cpu().numpy()
-        print("[DEBUG] observation:", observation)
+        # print("[DEBUG] observation:", observation)
 
         return observation
 
@@ -495,18 +549,53 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
 
         # gymnasium的action是numpy，但是下面的运算是torch，需要转换
         action = torch.from_numpy(action).float().to(self.device)
+        # print("[Step] action:", action)
 
         self.actions = torch.clip(action, -clip_actions, clip_actions).to(self.device)
 
-        self.torques = self._compute_torques(self.actions).view(self.torques.shape)
-        
-        # gymnasium 函数
-        self.do_simulation(self.torques, self.frame_skip)
+        # 仍然使用decimation，而不是使用mujoco的n_freames，目的是对齐torque的计算
+        for _ in range(self.cfg.control.decimation):
+            self.torques = self._compute_torques(self.actions).view(self.torques.shape)
+            # print("[Step] self.torques:", self.torques)
+
+            # 从pytorch转回numpy，以便调用do_simulation+
+            torques_np = self.torques.detach().cpu().numpy()
+            
+            # 可选但推荐：在这里做一次尺寸自检，错误更早更清晰
+            if torques_np.shape != (self.model.nu,):
+                raise ValueError(
+                    f"Action/torque dimension mismatch. Expected {(self.model.nu,)}, found {torques_np.shape}"
+                )
+            
+            # gymnasium 函数
+            self.do_simulation(torques_np, 1)
         
         # ==================================== self.post_physics_step() ==================================== 
         # 将post_physics_step拆开，observation、reward等部分分别放在_get_obs、_get_rew
         self.episode_length_buf += 1
         self.common_step_counter += 1
+
+        # ======================= 这里的变量是手动构造的，并不指向同一块内存，所以需要手动刷新 =======================
+        isaac2mujoco.refresh_actor_root_state_tensor(self.model, self.data, self.root_states_np)
+        self.root_states = torch.from_numpy(self.root_states_np)
+        # print("[Step] self.root_states:", self.root_states)
+
+
+        # dof_pos_np 和 dof_vel_np 是直接返回的，获取的就是指针，不需要手动刷新
+        self.dof_pos = torch.from_numpy(self.dof_pos_np)
+        self.dof_vel = torch.from_numpy(self.dof_vel_np)
+        # print("[Step] self.dof_pos:", self.dof_pos)
+        # print("[Step] self.dof_vel:", self.dof_vel)
+
+        isaac2mujoco.refresh_rigid_body_state_tensor(self.model, self.data, self.rigid_body_states_view)
+
+        
+        # contact_forces_np 是直接返回的，获取的就是指针，不需要手动刷新
+        self.contact_forces = torch.from_numpy(self.contact_forces_np)
+        # print("[Step] self.contact_forces:", self.contact_forces)
+        # ==================================================================================================
+
+
 
         # prepare quantities
         self.base_pos = self.root_states[0:3].clone()
@@ -524,9 +613,37 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
 
         # 修改为调用gymnasium提供的接口
         terminated = self.check_termination()
+        terminated_bool = bool(self.reset_buf.item())
+
         reward, reward_info = self._get_rew()
-        
-        info = {**reward_info}
+
+        # ======================== 修改变量的形式，gymnasium不能返回pytorch变量（即使是0维）========================
+        # ⭐ 把 reward 从 torch.Tensor -> float
+        if isinstance(reward, torch.Tensor):
+            # 标量 tensor 的情况
+            if reward.numel() == 1:
+                reward = float(reward.item())
+            else:
+                raise ValueError(
+                    f"Reward dimension mismatch. Expected 1, found {reward.shape}"
+            )
+        else:
+            reward = float(reward)
+
+        # ⭐（可选但推荐）把 info 里的 reward_* 也转成 Python 数值，避免后续算法（如日志、存盘）踩雷
+        clean_reward_info = {}
+        for k, v in reward_info.items():
+            if isinstance(v, torch.Tensor):
+                if v.numel() == 1:
+                    clean_reward_info[k] = float(v.item())
+                else:
+                    clean_reward_info[k] = float(v.mean().item())
+            else:
+                clean_reward_info[k] = float(v) if isinstance(v, (int, float)) else v
+        # ===================================================================================================
+
+        info = {**clean_reward_info}
+        # info = {**reward_info}
 
         if self.cfg.domain_rand.push_robots:
             self._push_robots()
@@ -542,7 +659,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         if self.render_mode == "human":
             self.render()
         # truncation=False as the time limit is handled by the `TimeLimit` wrapper added during `make`
-        return observation, reward, terminated, False, info
+        return observation, reward, terminated_bool, False, info
 
 
     def _push_robots(self):
@@ -567,7 +684,8 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     def reset_model(self):
 
         self.reset_idx()
-
+        self.step(np.zeros(self.num_actions, dtype=np.float32))
+        
         # gymnasium函数
         # self.set_state(qpos, qvel)
 
@@ -578,7 +696,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     def reset_idx(self):
         # reset robot states
         self._reset_dofs()
-        self._reset_root_states()
+        # self._reset_root_states()
 
         self._resample_commands()
 
@@ -658,6 +776,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         self.feet_state = self.rigid_body_states_view[self.feet_indices, :]
         self.feet_pos = self.feet_state[:, :3]
         self.feet_vel = self.feet_state[:, 7:10]
+        # print("[Step] self.feet_pos:", self.feet_pos)
 
         period = 0.8
         offset = 0.5
@@ -670,7 +789,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         self.phase_right = (self.phase + offset) % 1
         # cat 后shape变为 (2,)
         self.leg_phase = torch.cat([self.phase_left, self.phase_right], dim=-1)
-        print("[DEBUG] self.leg_phase.shape:", self.leg_phase.shape)
+        # print("[DEBUG] self.leg_phase.shape:", self.leg_phase.shape)
         # =========================================== g1_env ==========================================
 
         need_resample = bool(self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt) == 0)
@@ -686,14 +805,14 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         """ Check if environments need to be reset
         """
         self.reset_buf = torch.any(torch.norm(self.contact_forces[self.termination_contact_indices, :], dim=-1) > 1., dim=0)
-        print("[DEBUG] self.reset_buf.shape:", self.reset_buf.shape)
+        # print("[DEBUG] self.reset_buf.shape:", self.reset_buf.shape)
 
         self.reset_buf |= torch.logical_or(torch.abs(self.rpy[1])>1.0, torch.abs(self.rpy[0])>0.8)
         self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-        print("[DEBUG] self.time_out_buf.shape:", self.time_out_buf.shape)
+        # print("[DEBUG] self.time_out_buf.shape:", self.time_out_buf.shape)
         self.reset_buf |= self.time_out_buf
 
-        print("[DEBUG] self.reset_buf:", self.reset_buf)
+        # print("[DEBUG] self.reset_buf:", self.reset_buf)
         return self.reset_buf
 
 
@@ -726,8 +845,8 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             key = "_reward_termination"
             reward_info[key] = rew
         
-        print("[DEBUG] self.rew_buf:", self.rew_buf)
-        print("[DEBUG] reward_info:", reward_info)
+        # print("[DEBUG] self.rew_buf:", self.rew_buf)
+        # print("[DEBUG] reward_info:", reward_info)
         return self.rew_buf, reward_info
     
     # ============================================== legged_robot ==============================================
@@ -787,8 +906,8 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             "cos_phase"
         ]
 
-        for n, t in zip(names, parts):
-            print(f"[DEBUG] {n}: shape={t.shape}, dim={t.dim()}")
+        # for n, t in zip(names, parts):
+        #     print(f"[DEBUG] {n}: shape={t.shape}, dim={t.dim()}")
 
         self.obs_buf = torch.cat((  self.base_ang_vel  * self.obs_scales.ang_vel,
                                     self.projected_gravity,
