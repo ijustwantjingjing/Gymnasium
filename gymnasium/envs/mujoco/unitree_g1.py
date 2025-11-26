@@ -34,8 +34,6 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         self,
         cfg = G1RoughCfg(),
         train_cfgs = G1RoughCfgPPO(),
-        # frame_skip: int = 5,
-        # TODO: frame_skip 应该怎么设置? 和self.cfg.control.decimation有关么?
         frame_skip: int = 1,
         default_camera_config: dict[str, float | int] = DEFAULT_CAMERA_CONFIG,
         **kwargs,
@@ -110,18 +108,20 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             **kwargs,
         )
 
-        # 手动指定action_space（isaac gym是通过urdf中读取的关节限制，因为没有基于gymnasium所以也不需要action_space）
+        # ====== 手动指定action_space（isaac gym是通过urdf中读取的关节限制，因为没有基于gymnasium所以也不需要action_space）======
         clip_actions = self.cfg.normalization.clip_actions  # 和 LeggedGym config 对齐
         self.action_space = Box(
             low=-clip_actions * np.ones(self.num_actions, dtype=np.float32),
             high= clip_actions * np.ones(self.num_actions, dtype=np.float32),
             dtype=np.float32,
         )
+        # =============================================================================================================
 
         # 覆盖 MuJoCo 的 timestep，使之等于 cfg.sim.dt
         # 这样：self.dt = self.model.opt.timestep * self.frame_skip
-        #      = cfg.sim.dt * cfg.control.decimation
+        #              = cfg.sim.dt * cfg.control.decimation
         self.model.opt.timestep = self.sim_params.dt
+        print("[Init] self.model.opt.timestep:", self.model.opt.timestep)
 
         self.metadata = {
             "render_modes": [
@@ -139,7 +139,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             low=-clip_obs,
             high=clip_obs,
             shape=(self.num_obs,),
-            dtype=np.float32,
+            dtype=np.float64,
         )
 
 
@@ -359,7 +359,6 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
 
         self.base_quat = self.root_states[3:7]
         print("[Init] self.base_quat:", self.base_quat)
-        # root_states已经将mujoco的wxyz形式转换为了xyzw
         self.rpy = isaac2mujoco.get_euler_xyz(self.base_quat)
         print("[Init] self.rpy:", self.rpy)
         self.base_pos = self.root_states[0:3]
@@ -489,7 +488,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             if scale==0:
                 self.reward_scales.pop(key) 
             else:
-                self.reward_scales[key] *= self.dt
+                self.reward_scales[key] *= self.dt_step
         # prepare list of functions
         self.reward_functions = []
         self.reward_names = []
@@ -567,7 +566,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
                     f"Action/torque dimension mismatch. Expected {(self.model.nu,)}, found {torques_np.shape}"
                 )
             
-            # gymnasium 函数
+            # frame_skip设置为1,使用这里的for decimation进行循环
             self.do_simulation(torques_np, 1)
         
         # ==================================== self.post_physics_step() ==================================== 
@@ -613,12 +612,14 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
 
         # 修改为调用gymnasium提供的接口
         terminated = self.check_termination()
-        terminated_bool = bool(self.reset_buf.item())
+        terminated_bool = bool(terminated.item())
+        # if terminated_bool:
+        #     print("[Step] Episode terminated.")
 
         reward, reward_info = self._get_rew()
 
         # ======================== 修改变量的形式，gymnasium不能返回pytorch变量（即使是0维）========================
-        # ⭐ 把 reward 从 torch.Tensor -> float
+        # 把 reward 从 torch.Tensor -> float
         if isinstance(reward, torch.Tensor):
             # 标量 tensor 的情况
             if reward.numel() == 1:
@@ -630,7 +631,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         else:
             reward = float(reward)
 
-        # ⭐（可选但推荐）把 info 里的 reward_* 也转成 Python 数值，避免后续算法（如日志、存盘）踩雷
+        #（可选但推荐）把 info 里的 reward_* 也转成 Python 数值，避免后续算法（如日志、存盘）踩雷
         clean_reward_info = {}
         for k, v in reward_info.items():
             if isinstance(v, torch.Tensor):
@@ -665,9 +666,10 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     def _push_robots(self):
         """ Random pushes the robots. Emulates an impulse by setting a randomized base velocity. 
         """
-        need_push = self.episode_length_buf % int(self.cfg.domain_rand.push_interval) == 0
+        need_push = self.episode_length_buf % int(self.cfg.domain_rand.push_interval) == 0 # 250
         if need_push == False:
             return
+        # print("[_push_robots] Pushing robots, current push interval:", self.cfg.domain_rand.push_interval)
         max_vel = self.cfg.domain_rand.max_push_vel_xy
         self.root_states[7:9] = isaac2mujoco.torch_rand_float(-max_vel, max_vel, device=self.device) # lin vel x/y
         
@@ -684,7 +686,8 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     def reset_model(self):
 
         self.reset_idx()
-        self.step(np.zeros(self.num_actions, dtype=np.float32))
+        # TODO: 禁止调用全0的self.step，防止gymnasium对于terminate的判断有问题,这里的reset_model是gymnasium调用的,原先是在step中自己管理的
+        # self.step(np.zeros(self.num_actions, dtype=np.float32))
         
         # gymnasium函数
         # self.set_state(qpos, qvel)
@@ -694,9 +697,11 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     
     
     def reset_idx(self):
+        # print("[reset_idx] Resetting environments")
         # reset robot states
         self._reset_dofs()
-        # self._reset_root_states()
+        
+        self._reset_root_states()
 
         self._resample_commands()
 
@@ -738,6 +743,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
             Sets base position based on the curriculum
             Selects randomized base velocities within -0.5:0.5 [m/s, rad/s]
         """
+        # print("[_reset_root_states] Resetting root states")
         # base position
         if self.custom_origins:
             self.root_states = self.base_init_state
@@ -755,6 +761,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     def _resample_commands(self):
         """ Randommly select commands of some environments
         """
+        # print("[_resample_commands] Resampling commands")
         self.commands[0] = isaac2mujoco.torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], device=self.device)
         self.commands[1] = isaac2mujoco.torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], device=self.device)
         if self.cfg.commands.heading_command:
@@ -781,7 +788,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         period = 0.8
         offset = 0.5
         # episode_length_buf shape (1,)
-        self.phase = (self.episode_length_buf * self.dt) % period / period
+        self.phase = (self.episode_length_buf * self.dt_step) % period / period
         # self.episode_length_buf 是 0d 张量，因为要用来做 | 运算，这里保存为1D
         self.phase = self.phase.unsqueeze(0) # 0-d -> 1-d
 
@@ -792,8 +799,9 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         # print("[DEBUG] self.leg_phase.shape:", self.leg_phase.shape)
         # =========================================== g1_env ==========================================
 
-        need_resample = bool(self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt) == 0)
+        need_resample = bool(self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt_step) == 0) # 500
         if need_resample:
+            # print("[_post_physics_step_callback] Resampling commands, current resampling_time is ", int(self.cfg.commands.resampling_time / self.dt_step))
             self._resample_commands()
         if self.cfg.commands.heading_command:
             forward = isaac2mujoco.quat_apply(self.base_quat, self.forward_vec)
@@ -806,11 +814,21 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         """
         self.reset_buf = torch.any(torch.norm(self.contact_forces[self.termination_contact_indices, :], dim=-1) > 1., dim=0)
         # print("[DEBUG] self.reset_buf.shape:", self.reset_buf.shape)
+        # if torch.any(torch.norm(self.contact_forces[self.termination_contact_indices, :], dim=-1) > 1., dim=0):
+        #     print("[check_termination] Termination due to contact forces")
 
         self.reset_buf |= torch.logical_or(torch.abs(self.rpy[1])>1.0, torch.abs(self.rpy[0])>0.8)
+        # if torch.logical_or(torch.abs(self.rpy[1])>1.0, torch.abs(self.rpy[0])>0.8):
+        #     print("[check_termination] Termination due to base orientation")
+
         self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+        # if self.episode_length_buf > self.max_episode_length:
+        #     print("[check_termination] Termination due to time out")
+
         # print("[DEBUG] self.time_out_buf.shape:", self.time_out_buf.shape)
         self.reset_buf |= self.time_out_buf
+        # if self.reset_buf:
+        #     print("[check_termination] Episode will be reset. slef.episode_length_buf:", self.episode_length_buf.item())
 
         # print("[DEBUG] self.reset_buf:", self.reset_buf)
         return self.reset_buf
@@ -876,7 +894,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         # 需要确定gymnasium函数的调用时机，然后重构代码结构
         # 这里先简单重新计算phase
         period = 0.8
-        self.phase = (self.episode_length_buf * self.dt) % period / period
+        self.phase = (self.episode_length_buf * self.dt_step) % period / period
         # self.episode_length_buf 是 0d 张量，因为要用来做 | 运算，这里保存为1D
         self.phase = self.phase.unsqueeze(0) # 0-d -> 1-d
         # TODO end
@@ -959,17 +977,20 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
     def _parse_cfg(self, cfg):
-        # dt在init中覆盖gymnasium的原本设置
-        # self.dt = self.cfg.control.decimation * self.sim_params.dt
+        # 这里不能再直接使用self.dt，因为这里的self.dt是mujoco_env的dt，而不是cfg.sim.dt * cfg.control.decimation
+        self.dt_step = self.cfg.control.decimation * self.sim_params.dt
+        print("[Init] self.dt_step:", self.dt_step)
         self.obs_scales = self.cfg.normalization.obs_scales
         self.reward_scales = isaac2mujoco.class_to_dict(self.cfg.rewards.scales)
         self.command_ranges = isaac2mujoco.class_to_dict(self.cfg.commands.ranges)
      
 
         self.max_episode_length_s = self.cfg.env.episode_length_s
-        self.max_episode_length = np.ceil(self.max_episode_length_s / self.dt)
+        self.max_episode_length = np.ceil(self.max_episode_length_s / self.dt_step)
+        print("[Init] self.max_episode_length_s =", self.max_episode_length_s) # 20
+        print("[Init] self.max_episode_length =", self.max_episode_length) # 1000
 
-        self.cfg.domain_rand.push_interval = np.ceil(self.cfg.domain_rand.push_interval_s / self.dt)
+        self.cfg.domain_rand.push_interval = np.ceil(self.cfg.domain_rand.push_interval_s / self.dt_step)
 
 
 
@@ -1001,7 +1022,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
     
     def _reward_dof_acc(self):
         # Penalize dof accelerations
-        return torch.sum(torch.square((self.last_dof_vel - self.dof_vel) / self.dt), dim=0)
+        return torch.sum(torch.square((self.last_dof_vel - self.dof_vel) / self.dt_step), dim=0)
     
     def _reward_action_rate(self):
         # Penalize changes in actions
@@ -1047,7 +1068,7 @@ class UnitreeEnv(MujocoEnv, utils.EzPickle):
         contact_filt = torch.logical_or(contact, self.last_contacts) 
         self.last_contacts = contact
         first_contact = (self.feet_air_time > 0.) * contact_filt
-        self.feet_air_time += self.dt
+        self.feet_air_time += self.dt_step
         rew_airTime = torch.sum((self.feet_air_time - 0.5) * first_contact, dim=0) # reward only on first contact with the ground
         rew_airTime *= torch.norm(self.commands[:2], dim=0) > 0.1 #no reward for zero command
         self.feet_air_time *= ~contact_filt

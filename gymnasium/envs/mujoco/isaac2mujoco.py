@@ -184,11 +184,11 @@ def acquire_actor_root_state_tensor(model: mujoco.MjModel, data: mujoco.MjData):
 
     qvel = data.qvel[vadr:vadr+6]
     qpos = data.qpos[qadr:qadr+7]
+    # print("[DEBUG Warpper] qpos =", qpos)
 
     # 直接拼成 numpy，再一次转 torch
     root_np = np.empty((13,), dtype=np.float32)
-    root_np[0:3]  = qpos[0:3]          # px,py,pz
-    root_np[3:7]  = [qpos[4], qpos[5], qpos[6], qpos[3]]  # qx,qy,qz,qw
+    root_np[0:7]  = qpos               # qx, qy, qz, qw, pi, pj, pk
     root_np[7:13] = qvel               # vx,vy,vz,wx,wy,wz
     # print("[DEBUG Warpper] root_np.shape = ",root_np.shape)
     # print("[DEBUG Warpper] root_np = ",root_np)
@@ -206,8 +206,7 @@ def refresh_actor_root_state_tensor(model: mujoco.MjModel, data: mujoco.MjData, 
     qpos = data.qpos[qadr:qadr+7]
     qvel = data.qvel[vadr:vadr+6]
     
-    root_np[0:3]  = qpos[0:3]          # px,py,pz
-    root_np[3:7]  = [qpos[4], qpos[5], qpos[6], qpos[3]]  # qx,qy,qz,qw
+    root_np[0:7]  = qpos               # qx, qy, qz, qw, pi, pj, pk
     root_np[7:13] = qvel               # vx,vy,vz,wx,wy,wz
 
 
@@ -259,7 +258,7 @@ def set_actor_root_state_tensor_indexed(model: mujoco.MjModel, data: mujoco.MjDa
     """
     root_state: 形状 (13,) 的 torch 张量
     [0:3]  pos(x,y,z)
-    [3:7]  quat(x,y,z,w)   # Isaac Gym 顺序
+    [3:7]  quat(w,x,y,z)   # Mujoco 顺序
     [7:10] lin_vel(x,y,z)
     [10:13] ang_vel(x,y,z)
     """
@@ -271,8 +270,7 @@ def set_actor_root_state_tensor_indexed(model: mujoco.MjModel, data: mujoco.MjDa
 
     # Isaac: pos(x,y,z), quat(x,y,z,w) -> MuJoCo: quat(w,x,y,z), pos(x,y,z)
     pos_xyz   = root_state[0:3]
-    quat_xyzw = root_state[3:7]
-    quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
+    quat_wxyz = root_state[3:7]
     ang = root_state[10:13]
     lin = root_state[7:10]
     # print("[DEBUG Warpper] [input] root_state pos:", pos_xyz)
@@ -282,8 +280,8 @@ def set_actor_root_state_tensor_indexed(model: mujoco.MjModel, data: mujoco.MjDa
 
     # 写 qvel（顺序：ang_vel(3) + lin_vel(3)）
     data.qvel[0:6] = np.concatenate([ang, lin], axis=0)
-    # 写 qpos（顺序：quat(wxyz) + pos(xyz)）
-    data.qpos[0:7] = np.concatenate([quat_wxyz, pos_xyz], axis=0)
+    # 写 qpos（顺序：pos(xyz) + quat(wxyz)）
+    data.qpos[0:7] = np.concatenate([pos_xyz, quat_wxyz], axis=0)
 
     # 前向推进
     # mujoco.mj_normalizeQuat(model, data)
@@ -315,11 +313,16 @@ def torch_rand_float(lower, upper, device):
 
 def quat_apply(a, b):
     shape = b.shape
-    a = a.reshape(-1, 4)
-    b = b.reshape(-1, 3)
-    xyz = a[:, :3]
+    a = a.reshape(-1, 4)  # 四元数 a (w, x, y, z)
+    b = b.reshape(-1, 3)  # 向量 b (x, y, z)
+
+    # 提取四元数 w 和向量 x, y, z 部分
+    w = a[:, 0]  # 这是 w
+    xyz = a[:, 1:4]  # 这是 x, y, z
+
+    # 按照公式: v' = v + 2 * w * (q_vec × v) + 2 * (q_vec × (q_vec × v))
     t = xyz.cross(b, dim=-1) * 2
-    return (b + a[:, 3:] * t + xyz.cross(t, dim=-1)).view(shape)
+    return (b + w.unsqueeze(-1) * t + xyz.cross(t, dim=-1)).view(shape)
 
 def wrap_to_pi(angles):
     angles %= 2*np.pi
@@ -372,7 +375,7 @@ def copysign(a, b):
 def get_euler_xyz(q):
     q = torch.as_tensor(q, dtype=torch.float32)
 
-    qx, qy, qz, qw = 0, 1, 2, 3
+    qw, qx, qy, qz = 0, 1, 2, 3
 
     # roll
     sinr_cosp = 2.0 * (q[qw] * q[qx] + q[qy] * q[qz])
@@ -420,9 +423,9 @@ def quat_rotate_inverse(q, v):
     q = torch.as_tensor(q, dtype=torch.float32)
     v = torch.as_tensor(v, dtype=torch.float32)
 
-    # q: [x, y, z, w]
-    q_vec = q[:3]   # (3,)
-    q_w = q[3]      # 标量
+    # q: [w, x, y, z]
+    q_vec = q[1:4]   # (3,)
+    q_w = q[0]      # 标量
 
     # 按公式：v' = (2 w^2 - 1) v - 2 w (q × v) + 2 (q · v) q
     a = v * (2.0 * q_w ** 2 - 1.0)              # (3,)

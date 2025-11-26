@@ -50,7 +50,8 @@ class LeggedRobotCfg(BaseConfig):
 
     class init_state:
         pos = [0.0, 0.0, 1.] # x,y,z [m]
-        rot = [0.0, 0.0, 0.0, 1.0] # x,y,z,w [quat]
+        # rot = [0.0, 0.0, 0.0, 1.0] # x,y,z,w [quat]
+        rot = [1.0, 0.0, 0.0, 0.0] # Mujoco: w,x,y,z [quat]
         lin_vel = [0.0, 0.0, 0.0]  # x,y,z [m/s]
         ang_vel = [0.0, 0.0, 0.0]  # x,y,z [rad/s]
         default_joint_angles = { # target angles when action = 0.0
