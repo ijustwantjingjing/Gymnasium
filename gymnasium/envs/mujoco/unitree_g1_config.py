@@ -59,7 +59,8 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class asset( LeggedRobotCfg.asset ):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.urdf'
-        mj_file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.xml'
+        # mj_file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.xml'
+        mj_file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/scene.xml'
         name = "g1"
         foot_name = "ankle_roll"
         penalize_contacts_on = ["hip", "knee"]
